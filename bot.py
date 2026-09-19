@@ -19,16 +19,12 @@ except Exception as e:
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "Salom O'g'iloy! 💖\n\n"
-        "Men sizning aqlli yordamchingizman! 🤖\n\n"
-        "✨ **Siz bilan turli mavzuda suhbatlasha olaman:**\n"
-        "📚 Darslar, kitoblar, tarix\n"
-        "💡 Maslahatlar, g'oyalar\n"
-        "❤️ Dardlashish, motivasiya\n"
-        "😂 Hazil, qiziqarli mavzular\n"
-        "🌍 Har qanday savolingizga javob beraman!\n\n"
-        "🎬 **Jonli Video yaratish:** Rasm yuborib, tagiga gap yozing - men uni gapirtirib beraman, davomiyligi siz yozgan matnga qarab uzun bo'ladi!\n\n"
-        "Yozib ko'ring, nima haqida suhbatlashamiz?"
+        "Salom! 👋\n\n"
+        "Men Ogiloy Mamasidiqova tomonidan yaratildim! 💖\n\n"
+        "Men buyumlar, mevalar, hayvonlar va mult obrazdagi odamlarning tayyor rasmini jonlantirib beraman! 🎬\n\n"
+        "Menga tayyor rasm jo'nating!\n\n"
+        "Bundan tashqari, siz bilan turli mavzuda suhbatlasha olaman! 💬\n"
+        "Xohlagan savolingizni bering!"
     )
 
 async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -37,20 +33,20 @@ async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         if GEMINI_OK:
             await context.bot.send_chat_action(update.effective_chat.id, "typing")
-            res = model.generate_content(f"Sen O'g'iloy ismli mehribon qizsan. Foydalanuvchi bilan turli mavzuda suhbatlasha olasan, do'stona, samimiy javob ber. Foydalanuvchi savoli: {txt}")
+            res = model.generate_content(f"Sen Ogiloy Mamasidiqova yaratgan mehribon yordamchisan. Foydalanuvchi bilan turli mavzuda suhbatlasha olasan, samimiy javob ber. Savol: {txt}")
             await update.message.reply_text(res.text)
         else:
-            await update.message.reply_text(f"Albatta O'g'iloy! Siz bilan turli mavzuda suhbatlasha olaman! 💖 Siz '{txt}' dedingiz, men eshitdim! Tez orada aqlliroq bo'laman!")
+            await update.message.reply_text(f"Ha, men siz bilan turli mavzuda suhbatlasha olaman! 💬\nSiz: {txt}\n\n(Gemini key yangilanishi kerak)")
     except Exception as e:
         print(f"CHAT XATO: {e}")
-        await update.message.reply_text(f"Siz bilan turli mavzuda suhbatlasha olaman qadrdonim! 💬\nHozir kichik xato: {str(e)[:200]}")
+        await update.message.reply_text(f"Men siz bilan turli mavzuda suhbatlasha olaman qadrdonim! 💖\nSiz yozdingiz: {txt}\nMen eshitdim!")
 
 async def talk_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     caption = update.message.caption
     if not caption:
-        await update.message.reply_text("Rasm tagiga nima deyishini yozing! Men uni uzun video qilib gapirtiraman!")
+        await update.message.reply_text("Rasm tagiga nima deyishini yozing O'g'iloy! 🎬")
         return
-    await update.message.reply_text(f"Qabul qildim! 🎬\n'{caption}' - shu matn asosida davomiyligi uzun video qilayapman... 40 soniya!")
+    await update.message.reply_text(f"Qabul qildim! '{caption}' - jonlantiryapman... 40 soniya! ⏳")
     try:
         photo = await update.message.photo[-1].get_file()
         clean_key = DID_KEY.replace("Basic ", "") if DID_KEY else ""
@@ -69,7 +65,7 @@ async def talk_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
             time.sleep(3)
             g = requests.get(f"https://api.d-id.com/talks/{tid}", headers=headers).json()
             if g.get("result_url"):
-                await update.message.reply_video(g["result_url"], caption="Mana! Siz bilan turli mavzuda suhbatlasha oladigan videongiz tayyor! 💖")
+                await update.message.reply_video(g["result_url"], caption="Tayyor! Ogiloy Mamasidiqova nomidan! 💖")
                 return
         await update.message.reply_text("Biroz kechikdi, qayta yuboring!")
     except Exception as e:
