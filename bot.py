@@ -2,8 +2,7 @@ import os, asyncio
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 from PIL import Image
-from gtts import gTTS
-from moviepy.editor import ImageClip, AudioFileClip, concatenate_videoclips
+import imageio.v2 as imageio
 
 TOKEN = os.getenv("BOT_TOKEN")
 
@@ -13,48 +12,53 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Men Ogiloy Mamasidiqova tomonidan yaratildim! 💖\n\n"
         "Men buyumlar, mevalar, hayvonlar va mult obrazdagi odamlarning tayyor rasmini jonlantirib beraman! 🎬\n\n"
         "Menga tayyor rasm jo'nating!\n\n"
-        "Bundan tashqari men bilan turli mavzuda suhbat ham qura olishingiz mumkin! 💬"
+        "Bundan tashqari men bilan turli mavzuda suhbat ham qura olishingiz mumkin! 💬 Siz yozgan so'zlaringizga qarab video davomiyligi o'zgaradi!"
     )
 
 async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_text = update.message.text
-    javob = f"Qiziqarli! {user_text} haqida gaplashamiz. Bu mavzu juda yoqimli!"
+    text = update.message.text
+    words = len(text.split())
+    duration = max(3, words * 0.5) # har bir so'z uchun 0.5 sek, so'z tugaguncha
+    fps = 10
+    frames_count = int(duration * fps)
     
-    await update.message.reply_text(f"{javob}\n\n🎬 Siz uchun jonli video tayyorlayapman...")
+    await update.message.reply_text(f"Qabul qildim! '{text}'\nSiz uchun {duration:.1f} sekundlik jonli video tayyorlayapman... 🎬")
+
     try:
-        # Ovoz yaratish
-        tts = gTTS(text=javob, lang='uz')
-        tts.save("ovoz.mp3")
-        
-        audio = AudioFileClip("ovoz.mp3")
-        duration = audio.duration # so'z tugaguncha davomiylik
-
-        # Rasm - jonli video
-        # Standart rasm yaratamiz
         img = Image.new('RGB', (720, 720), color=(255, 182, 193))
-        img.save("chat.jpg")
-
-        clip = ImageClip("chat.jpg").set_duration(duration).set_audio(audio)
-        # zoom effekti
-        clip = clip.resize(lambda t: 1 + 0.05*t)
+        frames = []
+        for i in range(frames_count):
+            scale = 1 + i * 0.01
+            w, h = img.size
+            new_w, new_h = int(w*scale), int(h*scale)
+            resized = img.resize((new_w, new_h))
+            left = (new_w - w)//2
+            top = (new_h - h)//2
+            cropped = resized.crop((left, top, left+w, top+h))
+            frames.append(cropped)
         
-        clip.write_videofile("chat_video.mp4", fps=24, codec='libx264', audio_codec='aac')
-        
-        await update.message.reply_video(video=open("chat_video.mp4", "rb"), caption=f"🎤 {javob}")
+        imageio.mimsave("chat.mp4", frames, fps=fps, macro_block_size=1)
+        await update.message.reply_video(video=open("chat.mp4", "rb"), caption=f"Marhamat! {duration:.1f} sek video - so'zlaringiz tugaguncha! 💖")
     except Exception as e:
-        await update.message.reply_text(javob + f"\n\nVideo xato: {e}")
+        await update.message.reply_text(f"Chat javobi: {text} 😊 (video xato: {e})")
 
 async def rasm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Rasmingizni oldim! 🎬 Jonlantiryapman...")
     try:
         photo = await update.message.photo[-1].get_file()
         await photo.download_to_drive("input.jpg")
-        
-        # 5 sekundlik jonli video
-        clip = ImageClip("input.jpg").set_duration(5)
-        clip = clip.resize(lambda t: 1 + 0.1*t) # zoom
-        clip.write_videofile("output.mp4", fps=24)
-        
+        img = Image.open("input.jpg")
+        frames = []
+        for i in range(60): # 6 sekund
+            scale = 1 + i * 0.02
+            w, h = img.size
+            new_w, new_h = int(w*scale), int(h*scale)
+            resized = img.resize((new_w, new_h))
+            left = (new_w - w)//2
+            top = (new_h - h)//2
+            cropped = resized.crop((left, top, left+w, top+h))
+            frames.append(cropped)
+        imageio.mimsave("output.mp4", frames, fps=10, macro_block_size=1)
         await update.message.reply_video(video=open("output.mp4", "rb"), caption="Tayyor! 🎉 Ogiloy Mamasidiqova tomonidan jonlantirildi! 💖")
     except Exception as e:
         await update.message.reply_text(f"Xatolik: {e}")
@@ -65,7 +69,6 @@ async def main():
     app.add_handler(MessageHandler(filters.PHOTO, rasm))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, chat))
     await app.bot.delete_webhook(drop_pending_updates=True)
-    print("Bot ishga tushdi!")
     await app.run_polling()
 
 if __name__ == "__main__":
