@@ -1,42 +1,72 @@
-import os
+import os, asyncio
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+from PIL import Image
+from gtts import gTTS
+from moviepy.editor import ImageClip, AudioFileClip, concatenate_videoclips
 
 TOKEN = os.getenv("BOT_TOKEN")
 
-# 1. /start bosganda
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "Salom! 👋\n\n"
         "Men Ogiloy Mamasidiqova tomonidan yaratildim! 💖\n\n"
         "Men buyumlar, mevalar, hayvonlar va mult obrazdagi odamlarning tayyor rasmini jonlantirib beraman! 🎬\n\n"
         "Menga tayyor rasm jo'nating!\n\n"
-        "Bundan tashqari siz bilan turli mavzuda suhbatlasha olaman! 💬"
+        "Bundan tashqari men bilan turli mavzuda suhbat ham qura olishingiz mumkin! 💬"
     )
 
-# 2. Oddiy yozishsa - gaplashadi
 async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text.lower()
+    user_text = update.message.text
+    javob = f"Qiziqarli! {user_text} haqida gaplashamiz. Bu mavzu juda yoqimli!"
     
-    if "kutubxonachi" in text or "kutubxona" in text:
-        javob = "Kutubxonachi - kitoblar olamining qo'riqchisi! 📚 U har bir kitobni asraydi va o'quvchiga to'g'ri kitobni tavsiya qiladi. Sizga qanday kitob kerak?"
-    elif "salom" in text:
-        javob = "Salom O'g'iloy! 😊 Qalaysiz? Menga rasm jo'nating yoki xohlagan mavzuda savol bering!"
-    elif "isming" in text:
-        javob = "Mening ismim yo'q, meni Ogiloy Mamasidiqova yaratgan! 💖"
-    else:
-        javob = f"Siz: {update.message.text}\n\nQiziqarli fikr! Bu haqda yana gaplashamizmi? Menga rasm ham jo'natishingiz mumkin! 🎬"
-    
-    await update.message.reply_text(javob)
+    await update.message.reply_text(f"{javob}\n\n🎬 Siz uchun jonli video tayyorlayapman...")
+    try:
+        # Ovoz yaratish
+        tts = gTTS(text=javob, lang='uz')
+        tts.save("ovoz.mp3")
+        
+        audio = AudioFileClip("ovoz.mp3")
+        duration = audio.duration # so'z tugaguncha davomiylik
 
-# 3. Rasm jo'natsa
+        # Rasm - jonli video
+        # Standart rasm yaratamiz
+        img = Image.new('RGB', (720, 720), color=(255, 182, 193))
+        img.save("chat.jpg")
+
+        clip = ImageClip("chat.jpg").set_duration(duration).set_audio(audio)
+        # zoom effekti
+        clip = clip.resize(lambda t: 1 + 0.05*t)
+        
+        clip.write_videofile("chat_video.mp4", fps=24, codec='libx264', audio_codec='aac')
+        
+        await update.message.reply_video(video=open("chat_video.mp4", "rb"), caption=f"🎤 {javob}")
+    except Exception as e:
+        await update.message.reply_text(javob + f"\n\nVideo xato: {e}")
+
 async def rasm(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Rasmingizni oldim! 🎬 Tez orada jonlantirib beraman... (Bu qismi keyin qo'shamiz)")
+    await update.message.reply_text("Rasmingizni oldim! 🎬 Jonlantiryapman...")
+    try:
+        photo = await update.message.photo[-1].get_file()
+        await photo.download_to_drive("input.jpg")
+        
+        # 5 sekundlik jonli video
+        clip = ImageClip("input.jpg").set_duration(5)
+        clip = clip.resize(lambda t: 1 + 0.1*t) # zoom
+        clip.write_videofile("output.mp4", fps=24)
+        
+        await update.message.reply_video(video=open("output.mp4", "rb"), caption="Tayyor! 🎉 Ogiloy Mamasidiqova tomonidan jonlantirildi! 💖")
+    except Exception as e:
+        await update.message.reply_text(f"Xatolik: {e}")
 
-# Botni ishga tushirish
-app = Application.builder().token(TOKEN).build()
-app.add_handler(CommandHandler("start", start))
-app.add_handler(MessageHandler(filters.PHOTO, rasm))
-app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, chat))
+async def main():
+    app = Application.builder().token(TOKEN).build()
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(MessageHandler(filters.PHOTO, rasm))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, chat))
+    await app.bot.delete_webhook(drop_pending_updates=True)
+    print("Bot ishga tushdi!")
+    await app.run_polling()
 
-app.run_polling()
+if __name__ == "__main__":
+    asyncio.run(main())
