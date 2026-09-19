@@ -11,7 +11,7 @@ Quyidagi qiymatlarni kodga yozmang; Replit Secrets orqali qo'shing:
 
 Ixtiyoriy sozlamalar:
 
-- `GEMINI_MODEL` — odatda `gemini-2.5-flash`.
+- `GEMINI_MODEL` — odatda `gemini-3.6-flash`.
 - `GEMINI_TTS_MODEL` — odatda `gemini-3.1-flash-tts-preview`.
 - `GEMINI_TTS_VOICE` — TTS ovozi, standart qiymat `Kore`.
 
