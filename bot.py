@@ -31,7 +31,7 @@ logger = logging.getLogger("ezuai17bot")
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash").strip()
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.6-flash").strip()
 GEMINI_TTS_MODEL = os.getenv(
     "GEMINI_TTS_MODEL", "gemini-3.1-flash-tts-preview"
 ).strip()
