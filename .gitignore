@@ -1,0 +1,10 @@
+__pycache__/
+*.py[cod]
+.venv/
+.env
+*.mp4
+*.wav
+*.jpg
+*.jpeg
+*.png
+*.webp
