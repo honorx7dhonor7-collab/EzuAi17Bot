@@ -1,5 +1,3 @@
 python-telegram-bot==20.7
 Pillow==10.4.0
 imageio==2.34.1
-gTTS==2.5.1
-moviepy==1.0.3
