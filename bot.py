@@ -1,85 +1,86 @@
-import os
-import logging
-import requests
-import google.generativeai as genai
+import os, logging, requests, time
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
 logging.basicConfig(level=logging.INFO)
-
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 GEMINI_KEY = os.getenv("GEMINI_API_KEY")
 DID_KEY = os.getenv("D_ID_API_KEY")
 
-genai.configure(api_key=GEMINI_KEY)
-model = genai.GenerativeModel("gemini-1.5-flash")
+GEMINI_OK = False
+try:
+    import google.generativeai as genai
+    if GEMINI_KEY:
+        genai.configure(api_key=GEMINI_KEY)
+        model = genai.GenerativeModel("gemini-1.5-flash")
+        GEMINI_OK = True
+except Exception as e:
+    print(f"GEMINI XATO: {e}")
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Salom O'g'iloy! 💖 Men Ezuman!\n\nMenga oddiy yozing - suhbatlashaman!\nRasm + matn yuboring - gapiradigan video qilaman! 🎬")
+    await update.message.reply_text(
+        "Salom O'g'iloy! 💖\n\n"
+        "Men sizning aqlli yordamchingizman! 🤖\n\n"
+        "✨ **Siz bilan turli mavzuda suhbatlasha olaman:**\n"
+        "📚 Darslar, kitoblar, tarix\n"
+        "💡 Maslahatlar, g'oyalar\n"
+        "❤️ Dardlashish, motivasiya\n"
+        "😂 Hazil, qiziqarli mavzular\n"
+        "🌍 Har qanday savolingizga javob beraman!\n\n"
+        "🎬 **Jonli Video yaratish:** Rasm yuborib, tagiga gap yozing - men uni gapirtirib beraman, davomiyligi siz yozgan matnga qarab uzun bo'ladi!\n\n"
+        "Yozib ko'ring, nima haqida suhbatlashamiz?"
+    )
 
 async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    txt = update.message.text
+    print(f"XABAR: {txt}")
     try:
-        user_text = update.message.text
-        await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
-        response = model.generate_content(user_text)
-        await update.message.reply_text(response.text)
+        if GEMINI_OK:
+            await context.bot.send_chat_action(update.effective_chat.id, "typing")
+            res = model.generate_content(f"Sen O'g'iloy ismli mehribon qizsan. Foydalanuvchi bilan turli mavzuda suhbatlasha olasan, do'stona, samimiy javob ber. Foydalanuvchi savoli: {txt}")
+            await update.message.reply_text(res.text)
+        else:
+            await update.message.reply_text(f"Albatta O'g'iloy! Siz bilan turli mavzuda suhbatlasha olaman! 💖 Siz '{txt}' dedingiz, men eshitdim! Tez orada aqlliroq bo'laman!")
     except Exception as e:
-        await update.message.reply_text(f"Xato: {e}")
+        print(f"CHAT XATO: {e}")
+        await update.message.reply_text(f"Siz bilan turli mavzuda suhbatlasha olaman qadrdonim! 💬\nHozir kichik xato: {str(e)[:200]}")
 
 async def talk_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    caption = update.message.caption
+    if not caption:
+        await update.message.reply_text("Rasm tagiga nima deyishini yozing! Men uni uzun video qilib gapirtiraman!")
+        return
+    await update.message.reply_text(f"Qabul qildim! 🎬\n'{caption}' - shu matn asosida davomiyligi uzun video qilayapman... 40 soniya!")
     try:
-        if not update.message.caption:
-            await update.message.reply_text("O'g'iloy, rasm bilan birga nima deyishi kerakligini ham yozing! Masalan rasm tagiga: Salom men Ezu man!")
-            return
-
-        await update.message.reply_text("Qadrdonim, video tayyorlayapman... 30 soniya... 🎬✨")
-        
-        photo_file = await update.message.photo[-1].get_file()
-        photo_url = photo_file.file_path
-
-        # D-ID API
-        url = "https://api.d-id.com/talks"
-        headers = {
-            "Authorization": f"Basic {DID_KEY}",
-            "Content-Type": "application/json"
-        }
+        photo = await update.message.photo[-1].get_file()
+        clean_key = DID_KEY.replace("Basic ", "") if DID_KEY else ""
+        headers = {"Authorization": f"Basic {clean_key}", "Content-Type": "application/json"}
         data = {
-            "source_url": photo_url,
-            "script": {
-                "type": "text",
-                "input": update.message.caption,
-                "provider": {"type": "microsoft", "voice_id": "uz-UZ-MadinaNeural"}
-            }
+            "source_url": photo.file_path,
+            "script": {"type": "text", "input": caption, "provider": {"type": "microsoft", "voice_id": "uz-UZ-MadinaNeural"}},
+            "config": {"fluent": True, "pad_audio": 1.0, "result_format": "mp4", "stitch": True}
         }
-        
-        r = requests.post(url, json=data, headers=headers)
-        if r.status_code != 201:
-            await update.message.reply_text(f"D-ID xato: {r.text}")
+        r = requests.post("https://api.d-id.com/talks", json=data, headers=headers)
+        if r.status_code not in [200, 201]:
+            await update.message.reply_text(f"Video xato: {r.text[:400]}")
             return
-
-        talk_id = r.json()["id"]
-
-        # Kutilmoqda
-        import time
-        for _ in range(20):
+        tid = r.json()["id"]
+        for _ in range(40):
             time.sleep(3)
-            get_r = requests.get(f"{url}/{talk_id}", headers=headers)
-            result_url = get_r.json().get("result_url")
-            if result_url:
-                await update.message.reply_video(result_url, caption="Mana O'g'iloy! Sizning gapiradigan videongiz! 💖")
+            g = requests.get(f"https://api.d-id.com/talks/{tid}", headers=headers).json()
+            if g.get("result_url"):
+                await update.message.reply_video(g["result_url"], caption="Mana! Siz bilan turli mavzuda suhbatlasha oladigan videongiz tayyor! 💖")
                 return
-        
-        await update.message.reply_text("Video biroz kechikyapti, qayta urinib ko'ring!")
-
+        await update.message.reply_text("Biroz kechikdi, qayta yuboring!")
     except Exception as e:
-        await update.message.reply_text(f"Xato: {e}")
+        await update.message.reply_text(f"Video xato: {e}")
 
 def main():
     app = Application.builder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.PHOTO, talk_photo))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, chat))
-    print("Bot ishga tushdi!")
+    print("BOT START!")
     app.run_polling()
 
 if __name__ == "__main__":
