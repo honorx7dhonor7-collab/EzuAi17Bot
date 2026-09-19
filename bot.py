@@ -1,401 +1,124 @@
-import asyncio
-import base64
-import logging
 import os
-import tempfile
 import uuid
-import wave
-from pathlib import Path
-from typing import Optional
-
-import httpx
+import asyncio
+import logging
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
+from PIL import Image
 import imageio.v2 as imageio
-import numpy as np
-from PIL import Image, ImageDraw, ImageOps, UnidentifiedImageError
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
-from telegram.constants import ChatAction
-from telegram.ext import (
-    Application,
-    CallbackQueryHandler,
-    CommandHandler,
-    ContextTypes,
-    MessageHandler,
-    filters,
-)
+import google.generativeai as genai
 
-logging.basicConfig(
-    format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
-    level=os.getenv("LOG_LEVEL", "INFO").upper(),
-)
-logger = logging.getLogger("ezuai17bot")
+# Sozlash
+logging.basicConfig(level=logging.INFO)
+TOKEN = os.getenv("BOT_TOKEN")
+GEMINI_KEY = os.getenv("GEMINI_API_KEY")
 
-BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.6-flash").strip()
-GEMINI_TTS_MODEL = os.getenv(
-    "GEMINI_TTS_MODEL", "gemini-3.1-flash-tts-preview"
-).strip()
-GEMINI_TTS_VOICE = os.getenv("GEMINI_TTS_VOICE", "Kore").strip()
-GEMINI_API_BASE = "https://generativelanguage.googleapis.com/v1beta/models"
+if not TOKEN:
+    raise ValueError("BOT_TOKEN topilmadi! Render Environment ga qo'shing!")
+if GEMINI_KEY:
+    genai.configure(api_key=GEMINI_KEY)
+    gemini_model = genai.GenerativeModel('gemini-1.5-flash')
+else:
+    gemini_model = None
 
-MAX_UPLOAD_BYTES = 10 * 1024 * 1024
-MAX_IMAGE_SIDE = 1600
-MAX_CHAT_CHARS = 4000
-MAX_SPEECH_CHARS = 1200
-VIDEO_SIZE = (720, 720)
-VIDEO_FPS = 12
-VIDEO_SECONDS = 5
-WORK_DIR = Path(tempfile.gettempdir()) / "ezuai17bot"
-WORK_DIR.mkdir(parents=True, exist_ok=True)
-
-SYSTEM_PROMPT = (
-    "Siz EzuAi17Bot nomli Telegram botning mehribon va foydali yordamchisiz. "
-    "Foydalanuvchi bilan asosan o'zbek tilida, sodda va tabiiy tarzda suhbatlashing. "
-    "Savol boshqa tilda bo'lsa, shu tilni tushunib, imkon qadar o'zbek tilida javob bering. "
-    "Javoblarni aniq, xavfsiz va mavzuga mos yozing. Bilmagan narsangizni to'qib chiqarmang."
-)
-
-
-def user_dir(user_id: int) -> Path:
-    directory = WORK_DIR / str(user_id)
-    directory.mkdir(parents=True, exist_ok=True)
-    return directory
-
-
-def cleanup_file(path: Optional[Path]) -> None:
-    if not path:
-        return
-    try:
-        path.unlink(missing_ok=True)
-    except OSError:
-        logger.warning("Faylni o'chirib bo'lmadi: %s", path)
-
-
-def error_text(status_code: int, detail: str = "") -> str:
-    if status_code in (401, 403):
-        return (
-            "Gemini API kaliti noto'g'ri yoki ruxsati yetarli emas. "
-            "Replit Secrets ichidagi GEMINI_API_KEY ni tekshiring."
-        )
-    if status_code == 429:
-        return (
-            "Gemini API limiti tugagan yoki vaqtincha juda ko'p so'rov yuborildi. "
-            "Birozdan keyin qayta urinib ko'ring."
-        )
-    if status_code == 400:
-        return (
-            "Gemini so'rovni qabul qilmadi. Matnni qisqartirib yoki boshqacha yozib ko'ring."
-        )
-    if status_code >= 500:
-        return (
-            "Gemini serverida vaqtinchalik muammo bor. "
-            "Bir necha soniyadan keyin qayta urinib ko'ring."
-        )
-    safe_detail = detail.replace("\n", " ").strip()[:160]
-    return f"Gemini API xatosi ({status_code}). {safe_detail}".strip()
-
-
-async def gemini_request(payload: dict, model: str) -> dict:
-    if not GEMINI_API_KEY:
-        raise RuntimeError("GEMINI_API_KEY sozlanmagan")
-
-    url = f"{GEMINI_API_BASE}/{model}:generateContent"
-    headers = {
-        "x-goog-api-key": GEMINI_API_KEY,
-        "Content-Type": "application/json",
-    }
-    try:
-        async with httpx.AsyncClient(
-            timeout=httpx.Timeout(60.0, connect=15.0)
-        ) as client:
-            response = await client.post(url, headers=headers, json=payload)
-    except httpx.TimeoutException as exc:
-        raise RuntimeError("Gemini API javob berishiga vaqt yetmadi") from exc
-    except httpx.HTTPError as exc:
-        raise RuntimeError("Gemini API bilan ulanishda muammo bo'ldi") from exc
-
-    if response.status_code >= 400:
-        try:
-            detail = response.json().get("error", {}).get("message", "")
-        except ValueError:
-            detail = response.text
-        raise RuntimeError(error_text(response.status_code, detail))
-
-    try:
-        return response.json()
-    except ValueError as exc:
-        raise RuntimeError("Gemini API noto'g'ri javob qaytardi") from exc
-
-
-def extract_text(data: dict) -> str:
-    parts = data.get("candidates", [{}])[0].get("content", {}).get("parts", [])
-    text = "".join(part.get("text", "") for part in parts).strip()
-    if not text:
-        raise RuntimeError("Gemini javobida matn topilmadi")
-    return text
-
-
-async def gemini_chat(text: str, history: list[dict]) -> str:
-    history.append({"role": "user", "parts": [{"text": text}]})
-    payload = {
-        "systemInstruction": {"parts": [{"text": SYSTEM_PROMPT}]},
-        "contents": history[-10:],
-        "generationConfig": {"temperature": 0.7, "maxOutputTokens": 1200},
-    }
-    try:
-        result = await gemini_request(payload, GEMINI_MODEL)
-        answer = extract_text(result)
-    except Exception:
-        history.pop()
-        raise
-    history.append({"role": "model", "parts": [{"text": answer}]})
-    del history[:-10]
-    return answer
-
-
-def make_keyboard(token: str) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        [
-            [
-                InlineKeyboardButton(
-                    "🎬 Jonlantirish", callback_data=f"animate:{token}"
-                ),
-                InlineKeyboardButton(
-                    "🗣 Gapirtirish", callback_data=f"speak:{token}"
-                ),
-            ]
-        ]
+# Start
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "Salom! 👋\n\n"
+        "Men Ogiloy Mamasidiqova tomonidan yaratildim! 💖\n\n"
+        "Men buyumlar, mevalar, hayvonlar va mult obrazdagi odamlarning tayyor rasmini jonlantirib beraman! 🎬\n\n"
+        "Menga tayyor rasm jo'nating!\n\n"
+        "Bundan tashqari men bilan turli mavzuda suhbat ham qura olishingiz mumkin! 💬"
     )
 
-
-def normalize_image(source: Path, destination: Path) -> None:
+# Rasm kelganda tugmalar
+async def rasm_qabul(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
-        with Image.open(source) as image:
-            image.verify()
-        with Image.open(source) as image:
-            image = ImageOps.exif_transpose(image).convert("RGB")
-            image.thumbnail(
-                (MAX_IMAGE_SIDE, MAX_IMAGE_SIDE), Image.Resampling.LANCZOS
-            )
-            image.save(destination, format="JPEG", quality=90, optimize=True)
-    except (
-        UnidentifiedImageError,
-        OSError,
-        Image.DecompressionBombError,
-    ) as exc:
-        raise ValueError(
-            "Bu fayl haqiqiy yoki qo'llab-quvvatlanadigan rasm emas"
-        ) from exc
+        file_id = update.message.photo[-1].file_id
+        context.user_data['last_photo'] = file_id
+        
+        keyboard = [
+            [InlineKeyboardButton("🎬 Jonlantirish (Zoom)", callback_data="jonlantir")],
+            [InlineKeyboardButton("🗣️ Gapirtirish", callback_data="gapirtir")]
+        ]
+        await update.message.reply_text(
+            "Rasmingiz qabul qilindi! 😍\nNima qilamiz?",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+    except Exception as e:
+        await update.message.reply_text(f"Uzr, rasmni o'qishda xatolik: {e} 😔")
 
-
-async def save_image(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Path:
-    message = update.effective_message
-    if message is None:
-        raise ValueError("Rasm xabari topilmadi")
-
-    file_size = None
-    if message.photo:
-        telegram_file = await message.photo[-1].get_file()
-        file_size = message.photo[-1].file_size
-    elif (
-        message.document
-        and message.document.mime_type
-        and message.document.mime_type.startswith("image/")
-    ):
-        telegram_file = await message.document.get_file()
-        file_size = message.document.file_size
-    else:
-        raise ValueError("Faqat JPG, PNG yoki WEBP rasm yuboring")
-
-    if file_size and file_size > MAX_UPLOAD_BYTES:
-        raise ValueError("Rasm hajmi 10 MB dan oshmasligi kerak")
-
-    directory = user_dir(update.effective_user.id)
-    raw_path = directory / f"raw_{uuid.uuid4().hex}"
-    image_path = directory / f"image_{uuid.uuid4().hex}.jpg"
-    await telegram_file.download_to_drive(custom_path=str(raw_path))
-    try:
-        normalize_image(raw_path, image_path)
-    finally:
-        cleanup_file(raw_path)
-
-    old_path = context.user_data.get("image_path")
-    if old_path and old_path != str(image_path):
-        cleanup_file(Path(old_path))
-    context.user_data["image_path"] = str(image_path)
-    token = uuid.uuid4().hex[:16]
-    context.user_data["image_token"] = token
-    return image_path
-
-
-def prepare_frame(image_path: Path, scale: float) -> Image.Image:
-    with Image.open(image_path
-
-async def speak_callback(
-    update: Update, context: ContextTypes.DEFAULT_TYPE
-) -> None:
+# Tugmalar bosilganda
+async def tugma_bosildi(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    _, token = query.data.split(":", 1)
-    if token != context.user_data.get("image_token"):
-        await query.message.reply_text(
-            "Bu tugma eski rasmga tegishli. Rasmni qayta yuboring."
-        )
-        return
-    if not Path(context.user_data.get("image_path", "")).is_file():
-        await query.message.reply_text(
-            "Rasm topilmadi. Iltimos, rasmni qayta yuboring."
-        )
-        return
-    context.user_data["awaiting_speech"] = True
-    await query.message.reply_text(
-        "Rasm nima desin? Matnni yuboring (1200 belgigacha). "
-        "Masalan: Salom, do'stlar! 👋"
-    )
-
-
-async def make_speaking_image(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-    text: str,
-) -> None:
-    image_path = Path(context.user_data.get("image_path", ""))
-    if not image_path.is_file():
-        await update.effective_message.reply_text(
-            "Rasm topilmadi. Avval rasm yuboring."
-        )
+    
+    file_id = context.user_data.get('last_photo')
+    if not file_id:
+        await query.edit_message_text("Iltimos rasmni qayta jo'nating! 🙏")
         return
 
-    user_path = user_dir(update.effective_user.id)
-    video_path = user_path / f"speaking_{uuid.uuid4().hex}.mp4"
-    audio_path = user_path / f"speech_{uuid.uuid4().hex}.wav"
-    await update.effective_message.reply_text(
-        "Rasm gapirtirilmoqda, biroz kuting... 🗣"
-    )
+    uid = str(uuid.uuid4())[:8]
+    input_path = f"input_{uid}.jpg"
+    output_path = f"output_{uid}.mp4"
+
     try:
-        await context.bot.send_chat_action(
-            update.effective_chat.id, ChatAction.UPLOAD_VIDEO
-        )
-        await asyncio.gather(
-            asyncio.to_thread(write_video, image_path, video_path, text),
-            gemini_tts(text, audio_path),
-        )
-        with video_path.open("rb") as video:
-            await update.effective_message.reply_video(
-                video=video,
-                caption="Gapirayotgan video tayyor! 🎉",
-            )
-        with audio_path.open("rb") as audio:
-            await update.effective_message.reply_voice(
-                voice=audio,
-                caption="Ovozli variant 🔊",
-            )
-    except RuntimeError as exc:
-        await update.effective_message.reply_text(str(exc))
-    except Exception:
-        logger.exception("Rasmni gapirtirishda xatolik")
-        await update.effective_message.reply_text(
-            "Rasmni gapirtirishda xatolik bo'ldi. "
-            "Gemini TTS modeli yoki API limitini tekshiring."
-        )
+        await query.edit_message_text("🎬 Video tayyorlanmoqda, biroz kuting...")
+        photo_file = await context.bot.get_file(file_id)
+        await photo_file.download_to_drive(input_path)
+
+        img = Image.open(input_path).convert("RGB")
+        frames = []
+        # Jonlantirish effekti
+        for i in range(60):
+            scale = 1 + i * 0.015
+            w, h = img.size
+            new_w, new_h = int(w*scale), int(h*scale)
+            resized = img.resize((new_w, new_h))
+            left = (new_w - w)//2
+            top = (new_h - h)//2
+            cropped = resized.crop((left, top, left+w, top+h))
+            frames.append(cropped)
+        
+        imageio.mimsave(output_path, frames, fps=10, macro_block_size=1)
+        
+        caption = "Tayyor! 🎉 Ogiloy Mamasidiqova tomonidan jonlantirildi! 💖" if query.data == "jonlantir" else "Gapiryapti! 🗣️💖"
+        await context.bot.send_video(chat_id=query.message.chat_id, video=open(output_path, "rb"), caption=caption)
+
+    except Exception as e:
+        await context.bot.send_message(chat_id=query.message.chat_id, text=f"Video yasashda xatolik: {e}\nQayta urinib ko'ring!")
     finally:
-        cleanup_file(video_path)
-        cleanup_file(audio_path)
+        for p in [input_path, output_path]:
+            if os.path.exists(p): os.remove(p)
 
-
-async def text_message(
-    update: Update, context: ContextTypes.DEFAULT_TYPE
-) -> None:
-    text = (update.effective_message.text or "").strip()
-    if not text:
+# Matnli suhbat - Gemini bilan
+async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text
+    if not gemini_model:
+        await update.message.reply_text(f"Siz yozdingiz: {text}\n\n(Gemini kaliti ulanmagan, shuning uchun oddiy javob berdim. Render ga GEMINI_API_KEY qo'shing!)")
         return
-    if context.user_data.pop("awaiting_speech", False):
-        if len(text) > MAX_SPEECH_CHARS:
-            await update.effective_message.reply_text(
-                "Gapirtirish matni 1200 belgidan oshmasligi kerak. "
-                "Qisqaroq matn yuboring."
-            )
-            context.user_data["awaiting_speech"] = True
-            return
-        await make_speaking_image(update, context, text)
-        return
-
-    if len(text) > MAX_CHAT_CHARS:
-        await update.effective_message.reply_text(
-            "Xabaringiz juda uzun. Iltimos, 4000 belgidan qisqa qilib yuboring."
-        )
-        return
-    if not GEMINI_API_KEY:
-        await update.effective_message.reply_text(
-            "Suhbat funksiyasi hozir sozlanmagan: Replit Secrets ichiga "
-            "GEMINI_API_KEY qo'shing."
-        )
-        return
-
-    await update.effective_message.reply_chat_action(ChatAction.TYPING)
-    history = context.user_data.setdefault("history", [])
     try:
-        answer = await gemini_chat(text, history)
-        await update.effective_message.reply_text(answer[:4096])
-    except RuntimeError as exc:
-        await update.effective_message.reply_text(str(exc))
-    except Exception:
-        logger.exception("Gemini chat xatoligi")
-        await update.effective_message.reply_text(
-            "Suhbatda kutilmagan xatolik bo'ldi. Birozdan keyin qayta urinib ko'ring."
-        )
+        await context.bot.send_chat_action(chat_id=update.effective_chat_id, action="typing")
+        response = await asyncio.to_thread(gemini_model.generate_content, text)
+        await update.message.reply_text(response.text)
+    except Exception as e:
+        if "quota" in str(e).lower():
+            await update.message.reply_text("Hozirda so'rovlar ko'p, birozdan so'ng qayta yozib ko'ring! ⏳")
+        else:
+            await update.message.reply_text(f"Uzr, javob berishda xatolik: {e}")
 
-
-async def error_handler(
-    update: object, context: ContextTypes.DEFAULT_TYPE
-) -> None:
-    logger.error(
-        "Kutilmagan bot xatosi: %s",
-        context.error,
-        exc_info=context.error,
-    )
-    if isinstance(update, Update) and update.effective_message:
-        try:
-            await update.effective_message.reply_text(
-                "Kutilmagan xatolik yuz berdi. Iltimos, amalni qayta bajaring."
-            )
-        except Exception:
-            logger.exception("Xatolik xabarini yuborib bo'lmadi")
-
-
-def build_application() -> Application:
-    if not BOT_TOKEN:
-        raise RuntimeError(
-            "BOT_TOKEN Replit Secrets ichida topilmadi"
-        )
-
-    application = Application.builder().token(BOT_TOKEN).build()
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("help", help_command))
-    application.add_handler(
-        CallbackQueryHandler(animate_callback, pattern=r"^animate:")
-    )
-    application.add_handler(
-        CallbackQueryHandler(speak_callback, pattern=r"^speak:")
-    )
-    application.add_handler(
-        MessageHandler(
-            filters.PHOTO | filters.Document.IMAGE,
-            handle_image,
-        )
-    )
-    application.add_handler(
-        MessageHandler(filters.TEXT & ~filters.COMMAND, text_message)
-    )
-    application.add_error_handler(error_handler)
-    return application
-
-
-def main() -> None:
-    application = build_application()
-    logger.info("Bot ishga tushmoqda. Gemini modeli: %s", GEMINI_MODEL)
-    application.run_polling(drop_pending_updates=True)
-
+def main():
+    if not TOKEN:
+        print("XATO: BOT_TOKEN yo'q!")
+        return
+    app = Application.builder().token(TOKEN).build()
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CallbackQueryHandler(tugma_bosildi))
+    app.add_handler(MessageHandler(filters.PHOTO, rasm_qabul))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, chat))
+    
+    print("Bot ishga tushdi...")
+    app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
     main()
