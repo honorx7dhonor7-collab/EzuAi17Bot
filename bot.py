@@ -1,53 +1,81 @@
 import os
+import requests
+import time
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 import google.generativeai as genai
 
-# Tokenlar Render Environment dan olinadi
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+BOT_TOKEN = os.environ.get("BOT_TOKEN")
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
+D_ID_API_KEY = os.environ.get("D_ID_API_KEY")
 
-# Gemini sozlash
 genai.configure(api_key=GEMINI_API_KEY)
-
-model = genai.GenerativeModel(
-    'gemini-2.0-flash',
-    system_instruction="Sening isming EzuAi17Bot. Seni O'g'iloy yaratgan. Sen O'g'iloy tomonidan yaratilgan yordamchi botsan. Har doim o'zingni O'g'iloy yaratganini ayt. Seni kim yaratgan deb so'rashsa 'Meni O'g'iloy yaratgan!' deb javob ber. Juda do'stona, samimiy va chiroyli qizlardek javob ber. O'zbek tilida javob ber."
-)
+model = genai.GenerativeModel('gemini-1.5-flash')
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "Salom! 👋 Men EzuAi17Bot man!\n\n"
-        "Meni O'g'iloy yaratgan! 😊💖\n\n"
-        "🎨 Rasm yuboring - uni tahlil qilaman\n"
-        "💬 Savol yozing - javob beraman\n\n"
-        "/start - Boshlash"
-    )
+    await update.message.reply_text("Salom O'g'iloy! 😊 Men EzuAi17Bot man! Oddiy yozing - javob beraman, yoki rasm + matn yuboring - gapiradigan video qilaman! 🎬")
 
-async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_text = update.message.text
-    
-    # Kim yaratganini tekshirish
-    if "kim yarat" in user_text.lower() or "kim yasadi" in user_text.lower() or "muallif" in user_text.lower():
-        await update.message.reply_text("Meni O'g'iloy yaratgan! 💖 U juda aqlli va chiroyli! 😊")
-        return
-    
+async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
-        response = model.generate_content(user_text)
+        prompt = update.message.text
+        response = model.generate_content(prompt)
         await update.message.reply_text(response.text)
     except Exception as e:
         await update.message.reply_text(f"Xatolik: {e}")
 
-async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def talking_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
-        photo_file = await update.message.photo[-1].get_file()
-        await photo_file.download_to_drive("temp.jpg")
+        caption = update.message.caption
+        if not caption:
+            await update.message.reply_text("O'g'iloy, iltimos rasmni tanlab, pastidagi caption joyiga matn yozing! Masalan: 'Salom men O'g'iloy man' deb yozib yuboring.")
+            return
+
+        await update.message.reply_text("⏳ Jonlantiryapman O'g'iloy... 30 soniya kuting!")
+
+        photo = update.message.photo[-1]
+        file = await context.bot.get_file(photo.file_id)
+        file_url = file.file_path
+
+        url = "https://api.d-id.com/talks"
+        headers = {
+            "Authorization": f"Basic {D_ID_API_KEY}",
+            "Content-Type": "application/json"
+        }
+        data = {
+            "source_url": file_url,
+            "script": {"type": "text", "input": caption, "provider": {"type": "microsoft", "voice_id": "en-US-JennyNeural"}},
+            "config": {"fluent": True, "pad_audio": 0.5}
+        }
         
-        # Rasmni yuklash
-        import PIL.Image
-        img = PIL.Image.open("temp.jpg")
+        res = requests.post(url, headers=headers, json=data).json()
+        talk_id = res.get("id")
         
-        caption = update.message.caption if update.message.caption else "Bu rasmni tahlil qilib ber"
+        if not talk_id:
+            await update.message.reply_text(f"D-ID xatolik: {res}")
+            return
+
+        for _ in range(20):
+            time.sleep(3)
+            get_url = f"https://api.d-id.com/talks/{talk_id}"
+            result = requests.get(get_url, headers=headers).json()
+            if result.get("status") == "done":
+                video_url = result.get("result_url")
+                await update.message.reply_video(video_url, caption=f"Siz yozdingiz: {caption} 🎬")
+                return
+            if result.get("status") == "error":
+                await update.message.reply_text(f"Video yasashda xato: {result}")
+                return
         
-        response = model.generate_content([caption, img])
-        await update.message.reply_text
+        await update.message.reply_text("Video uzoq tayyor bo'lyapti, keyinroq urinib ko'ring.")
+    except Exception as e:
+        await update.message.reply_text(f"Video xatolik: {e}")
+
+def main():
+    app = Application.builder().token(BOT_TOKEN).build()
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, chat))
+    app.add_handler(MessageHandler(filters.PHOTO, talking_photo))
+    app.run_polling()
+
+if __name__ == "__main__":
+    main()
